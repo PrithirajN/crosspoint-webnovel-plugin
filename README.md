@@ -2,6 +2,8 @@
 
 Search Royal Road, Scribble Hub or AO3 (Archive of Our Own), download a web novel or work as an EPUB, and later add only the new chapters to that same EPUB.
 
+![Covers the plugin draws for books without one](covers.png)
+
 ## Install
 
 1. Make a `webnovel` folder in `/plugins/` on the reader's SD card and copy `manifest.json` and `plugin.js` into it, so you have `/plugins/webnovel/plugin.js`.
@@ -38,3 +40,11 @@ Keep the web page open and the reader awake while it works. Large novels take a 
 - If Royal Road shows a bot check to the reader, downloads fail with a message saying so.
 - Author's notes are left out. An image that fails to download is skipped and the chapter is kept.
 - For personal reading only; please respect the authors (Royal Road shows them ads and Patreon links you won't see here).
+
+## Credits
+
+The Royal Road, Scribble Hub and AO3 parsing follows [WebToEpub](https://github.com/dteviot/WebToEpub)'s site parsers.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
