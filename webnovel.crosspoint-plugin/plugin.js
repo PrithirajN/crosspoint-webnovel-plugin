@@ -25,6 +25,7 @@
   const LIB_FILE = "library.json";
   const DELAY_MS = 1200;                // pause between chapter requests (be polite)
   const CHECKPOINT_EVERY = 50;          // save a partial EPUB every N new chapters
+  const RETRY_SCALE = 1;                // 1 = real waits after a refused request (tests set 0)
   const HEADERS = {
     "User-Agent":
       "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36",
@@ -172,14 +173,50 @@
   // ---------------------------------------------------------------- plugin
   CrossPoint.registerPlugin(function (container, api) {
     // ---- Royal Road access, via the device
+    // The reader downloads the URL to SD. This calls /api/fetch directly (same protocol as
+    // api.fetchToSd) because the host helper reports every failure as "made no progress" and
+    // hides the site's real answer, e.g. HTTP 429 (too many requests) or 403 (blocked).
+    async function deviceFetch(url, dest, headers) {
+      const maxBytes = 2 * 1024 * 1024;
+      let offset = 0;
+      for (;;) {
+        let r;
+        try {
+          r = await fetch("/api/fetch", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ plugin: api.name || "webnovel", url, dest, headers, offset, maxBytes }) });
+        } catch (e) { const err = new Error("lost connection to the reader"); err.retry = true; throw err; }
+        let j = {};
+        try { j = JSON.parse((await r.text()).trim() || "{}"); } catch (e) { j = {}; }
+        const status = j.status;
+        if (j.complete === false && Number.isFinite(j.bytes) && j.bytes > offset && !j.error) { offset = j.bytes; continue; }
+        if (!j.error && r.ok && (status == null || (status >= 200 && status < 300))) return j;
+        const site = SOURCES[sourceOf(url)].name;
+        let msg, retry = false, wait = 0;
+        if (status === 429) { msg = site + " says too many requests (HTTP 429)"; retry = true; wait = 60000; }
+        else if (status === 403) { msg = site + " refused the request (HTTP 403), probably its bot protection"; retry = true; wait = 30000; }
+        else if (status === 503 || status === 502 || status === 504) { msg = site + " is busy (HTTP " + status + ")"; retry = true; wait = 20000; }
+        else if (status === 404) msg = "page not found on " + site + " (HTTP 404)";
+        else if (status > 0) msg = site + " answered HTTP " + status;
+        else if (j.error === "transport failure" || status < 0) { msg = "the reader couldn't reach " + site + " (check its Wi\u2011Fi has internet)"; retry = true; wait = 10000; }
+        else { msg = j.error || ("reader error " + r.status); retry = true; wait = 5000; }
+        const err = new Error(msg); err.retry = retry; err.wait = wait; err.status = status;
+        throw err;
+      }
+    }
     async function fetchToTmp(url, name, extra) {
       const dest = TMP + "/" + name;
       await deleteSd([dest]); // never parse a stale copy if this download fails
-      const r = await api.fetchToSd(url, dest, Object.assign({}, HEADERS, extra || {}));
-      if (r && (r.error || (r.status && r.status !== 200) || r.complete === false)) {
-        throw new Error("Download failed: " + (r.error || "HTTP " + r.status) + " \u2014 " + url);
+      const headers = Object.assign({}, HEADERS, extra || {});
+      for (let attempt = 1; ; attempt++) {
+        try { await deviceFetch(url, dest, headers); return dest; }
+        catch (e) {
+          if (!e.retry || attempt >= 3 || stopRequested) throw new Error(e.message + " \u2014 " + url);
+          const secs = Math.round((e.wait || 5000) * attempt * RETRY_SCALE / 1000);
+          log(e.message + "; waiting " + secs + " s and trying again\u2026");
+          setStatus("Waiting " + secs + " s (" + e.message + ")\u2026");
+          for (let t = 0; t < secs && !stopRequested; t++) await sleep(1000);
+        }
       }
-      return dest;
     }
     async function fetchDoc(url, extra) {
       if (!extra && sourceOf(url) === "sh") extra = shHeaders();
