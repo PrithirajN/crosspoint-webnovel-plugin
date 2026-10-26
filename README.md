@@ -2,8 +2,6 @@
 
 Search Royal Road, Scribble Hub or AO3 (Archive of Our Own), download a web novel or work as an EPUB, and later add only the new chapters to that same EPUB.
 
-![Covers the plugin draws for books without one](covers.png)
-
 ## Install
 
 1. Make a `webnovel` folder in `/plugins/` on the reader's SD card and copy `manifest.json` and `plugin.js` into it, so you have `/plugins/webnovel/plugin.js`.
