@@ -32,6 +32,9 @@
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
   };
+  // Honest identity, used for a site that puts its "not a bot" check in front of browser-like visitors
+  const PLAIN_UA = "CrossPoint-WebNovels/0.6.4 (e-reader plugin; +https://github.com/PrithirajN/crosspoint-webnovel-plugin)";
+  const plainUa = {}; // site -> true once its check was met with the browser user agent
   const STATUSES = ["ONGOING", "COMPLETED", "HIATUS", "STUB", "DROPPED", "INACTIVE"];
 
   // ---------------------------------------------------------------- small helpers
@@ -220,8 +223,25 @@
     }
     async function fetchDoc(url, extra) {
       if (!extra && sourceOf(url) === "sh") extra = shHeaders();
-      const html = await readSd(await fetchToTmp(url, "page.html", extra));
+      const site = sourceOf(url);
+      const withUa = () => (plainUa[site] ? Object.assign({}, extra || {}, { "User-Agent": PLAIN_UA }) : extra);
+      let html = await readSd(await fetchToTmp(url, "page.html", withUa()));
       if (!html) throw new Error("Could not read the downloaded page \u2014 " + url);
+      // "Making sure you're not a bot!" is Anubis, a proof-of-work check meant for browsers. It
+      // normally only challenges browser-like user agents, so ask again once, honestly identified.
+      const isBotCheck = (h) => /making sure you(?:'|&#39;|\u2019)?re not a bot/i.test(h) || /id=["']anubis_challenge["']|\/\.within\.website\//i.test(h);
+      if (isBotCheck(html) && !plainUa[site]) {
+        plainUa[site] = true;
+        log(SOURCES[site].name + " asked for a \u201Cnot a bot\u201D check; asking again as the CrossPoint plugin\u2026");
+        await sleep(SOURCES[site].delay);
+        html = await readSd(await fetchToTmp(url, "page.html", withUa()));
+        if (!html) throw new Error("Could not read the downloaded page \u2014 " + url);
+      }
+      if (isBotCheck(html)) {
+        await saveDebug(html);
+        throw new Error(SOURCES[site].name + " is showing a \u201Cmaking sure you're not a bot\u201D check that only a full web browser can pass, " +
+          "so the reader can't get through right now. Try again later.");
+      }
       const doc = new DOMParser().parseFromString(html, "text/html");
       // Normal Royal Road pages also load Cloudflare's challenge-platform script, so only a
       // real interstitial counts: its title, or its challenge form with none of the page content.
@@ -453,9 +473,12 @@
       let status = pickStatus([...doc.querySelectorAll(".fiction-info .label, .fic-header .label, span.label")]
         .map((l) => txt(l).toUpperCase()));
       if (status === "UNKNOWN") {
-        const leaf = [...header.querySelectorAll("span, a, div, p")].find((e) =>
-          !e.children.length && STATUSES.includes(txt(e).toUpperCase()));
-        if (leaf) status = txt(leaf).toUpperCase();
+        // A badge's own text (ignoring icons inside it), e.g. <span><i class="fa"></i> ONGOING</span>
+        const ownText = (e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.nodeValue).join(" ").replace(/\s+/g, " ").trim().toUpperCase();
+        for (const scope of [header, doc]) {
+          const hit = [...scope.querySelectorAll("span, a, div, p, li, label")].find((e) => STATUSES.includes(ownText(e)));
+          if (hit) { status = ownText(hit); break; }
+        }
       }
 
       const coverEl = doc.querySelector(".cover-art-container img, img.thumbnail, img[data-type='cover']");
@@ -1379,9 +1402,11 @@
         const lib = await loadLibrary();
         $("rr-res").innerHTML = "";
         $("rr-more").style.display = "none";
-        const url = q.startsWith("http") ? q : "https://" + q.replace(/^\/+/, "");
+        const m = q.match(/royalroad\.com\/fiction\/(\d+)(?:\/([^/?#\s]+))?/i);
+        const url = RR + "/fiction/" + m[1] + (m[2] ? "/" + m[2] : "");
         setStatus("Opening link\u2026");
         const f = parseFiction(await fetchDoc(url), url);
+        if (!f.chapters.length) throw new Error("That page didn't look like a Royal Road fiction (no chapter list). Saved it as " + ROOT + "/debug-last-page.html.");
         $("rr-res").appendChild(card({ id: f.id, title: f.title, author: f.author, url: f.url, status: f.status,
           chapters: f.chapters.length, genres: f.genres, coverUrl: f.coverUrl, blurb: f.descriptionText.slice(0, 400) }, lib[f.id]));
         setStatus("");
@@ -1393,8 +1418,9 @@
         return;
       }
       if (site() === "sh") {
-        const qs = "?s=" + encodeURIComponent(q) + "&post_type=fictionposts";
-        await startResults((n) => SH + (n > 1 ? "/page/" + n + "/" : "/") + qs, "Scribble Hub results for \u201C" + q + "\u201D", shParseSearch);
+        // Scribble Hub's search is its Series Finder (the old /?s= search now answers 410)
+        const base = SH + "/series-finder/?sf=1&sh=" + encodeURIComponent(q);
+        await startResults((n) => base + (n > 1 ? "&pg=" + n : ""), "Scribble Hub results for \u201C" + q + "\u201D", shParseSearch);
         return;
       }
       const base = RR + "/fictions/search?title=" + encodeURIComponent(q);
